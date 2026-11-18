@@ -9,38 +9,59 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.*
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 class TimerService : Service() {
 
-    private val serviceJob = SupervisorJob()
-    private val serviceScope = CoroutineScope(Dispatchers.Default + serviceJob)
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentSeconds = 0
     private var taskName = "Focus Task"
     private var isRunning = false
+    private var startTimeMillis = 0L
+    private var scheduler: ScheduledExecutorService? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        taskName = intent?.getStringExtra(EXTRA_TASK_NAME) ?: "Focus Task"
-        currentSeconds = intent?.getIntExtra(EXTRA_SECONDS, 0) ?: 0
         val action = intent?.action
-
         if (action == ACTION_STOP) {
             stopTimerAndService()
             return START_NOT_STICKY
         }
 
+        taskName = intent?.getStringExtra(EXTRA_TASK_NAME) ?: taskName
+        val requestedSeconds = intent?.getIntExtra(EXTRA_SECONDS, -1) ?: -1
+
         if (!isRunning) {
             isRunning = true
+            currentSeconds = if (requestedSeconds >= 0) requestedSeconds else 0
+            startTimeMillis = SystemClock.elapsedRealtime() - (currentSeconds * 1000L)
             acquireWakeLock()
+            saveTimerState(true, startTimeMillis, taskName)
             startTicking()
+        } else {
+            if (requestedSeconds >= 0 && kotlin.math.abs(requestedSeconds - currentSeconds) > 2) {
+                currentSeconds = requestedSeconds
+                startTimeMillis = SystemClock.elapsedRealtime() - (currentSeconds * 1000L)
+                saveTimerState(true, startTimeMillis, taskName)
+            }
         }
 
         showNotification(taskName, currentSeconds)
         return START_STICKY
+    }
+
+    private fun saveTimerState(running: Boolean, startRealtime: Long, name: String) {
+        val prefs = getSharedPreferences("ftt_timer_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("is_timer_running", running)
+            .putLong("start_elapsed_realtime", startRealtime)
+            .putString("running_task_name", name)
+            .apply()
     }
 
     private fun acquireWakeLock() {
@@ -50,7 +71,7 @@ class TimerService : Service() {
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "FocusTimeTracker::TimerWakeLock"
             ).apply {
-                acquire(4 * 60 * 60 * 1000L) // 4 hours max safety timeout
+                acquire(8 * 60 * 60 * 1000L)
             }
         }
     }
@@ -69,27 +90,32 @@ class TimerService : Service() {
     }
 
     private fun startTicking() {
-        serviceScope.launch {
-            while (isRunning) {
-                delay(1000)
-                currentSeconds++
+        scheduler?.shutdownNow()
+        scheduler = Executors.newSingleThreadScheduledExecutor().apply {
+            scheduleWithFixedDelay({
+                if (!isRunning) {
+                    shutdown()
+                    return@scheduleWithFixedDelay
+                }
+                val elapsedMillis = SystemClock.elapsedRealtime() - startTimeMillis
+                currentSeconds = (elapsedMillis / 1000L).toInt()
 
-                // Update notification
                 showNotification(taskName, currentSeconds)
 
-                // Broadcast tick to MainActivity
                 val tickIntent = Intent(ACTION_TICK_BROADCAST).apply {
                     putExtra(EXTRA_SECONDS, currentSeconds)
                 }
                 sendBroadcast(tickIntent)
-            }
+            }, 0, 1, TimeUnit.SECONDS)
         }
     }
 
     private fun stopTimerAndService() {
         isRunning = false
-        serviceJob.cancelChildren()
+        scheduler?.shutdownNow()
+        scheduler = null
         releaseWakeLock()
+        saveTimerState(false, 0L, "")
 
         val stopBroadcast = Intent(ACTION_STOP_BROADCAST)
         sendBroadcast(stopBroadcast)
@@ -101,8 +127,10 @@ class TimerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        serviceJob.cancel()
+        scheduler?.shutdownNow()
+        scheduler = null
         releaseWakeLock()
+        saveTimerState(false, 0L, "")
     }
 
     private fun showNotification(taskName: String, totalSeconds: Int) {

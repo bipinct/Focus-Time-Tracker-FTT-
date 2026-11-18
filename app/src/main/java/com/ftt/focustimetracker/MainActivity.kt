@@ -512,8 +512,9 @@ fun TimeTrackerApp() {
         }
     }
 
-    // Listen to notification stop and tick broadcasts from TimerService
-    DisposableEffect(context) {
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    // Listen to notification stop and tick broadcasts from TimerService and lifecycle resume
+    DisposableEffect(lifecycleOwner, context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
@@ -538,8 +539,28 @@ fun TimeTrackerApp() {
         } else {
             context.registerReceiver(receiver, filter)
         }
+
+        val lifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                val prefs = context.getSharedPreferences("ftt_timer_prefs", Context.MODE_PRIVATE)
+                if (prefs.getBoolean("is_timer_running", false)) {
+                    val startRealtime = prefs.getLong("start_elapsed_realtime", 0L)
+                    if (startRealtime > 0L) {
+                        val elapsedSecs = ((android.os.SystemClock.elapsedRealtime() - startRealtime) / 1000L).toInt()
+                        if (elapsedSecs >= 0) {
+                            tasks = tasks.map {
+                                if (it.isRunning) it.copy(totalSeconds = elapsedSecs) else it
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+
         onDispose {
             context.unregisterReceiver(receiver)
+            lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
         }
     }
 
