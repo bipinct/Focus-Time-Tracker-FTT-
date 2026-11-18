@@ -8,43 +8,115 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.*
 
 class TimerService : Service() {
+
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(Dispatchers.Default + serviceJob)
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var currentSeconds = 0
+    private var taskName = "Focus Task"
+    private var isRunning = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val taskName = intent?.getStringExtra(EXTRA_TASK_NAME) ?: "Focus Task"
-        val totalSeconds = intent?.getIntExtra(EXTRA_SECONDS, 0) ?: 0
+        taskName = intent?.getStringExtra(EXTRA_TASK_NAME) ?: "Focus Task"
+        currentSeconds = intent?.getIntExtra(EXTRA_SECONDS, 0) ?: 0
         val action = intent?.action
 
         if (action == ACTION_STOP) {
-            val stopBroadcast = Intent(ACTION_STOP_BROADCAST)
-            sendBroadcast(stopBroadcast)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopTimerAndService()
             return START_NOT_STICKY
         }
 
-        showNotification(taskName, totalSeconds)
+        if (!isRunning) {
+            isRunning = true
+            acquireWakeLock()
+            startTicking()
+        }
+
+        showNotification(taskName, currentSeconds)
         return START_STICKY
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "FocusTimeTracker::TimerWakeLock"
+            ).apply {
+                acquire(4 * 60 * 60 * 1000L) // 4 hours max safety timeout
+            }
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        wakeLock = null
+    }
+
+    private fun startTicking() {
+        serviceScope.launch {
+            while (isRunning) {
+                delay(1000)
+                currentSeconds++
+
+                // Update notification
+                showNotification(taskName, currentSeconds)
+
+                // Broadcast tick to MainActivity
+                val tickIntent = Intent(ACTION_TICK_BROADCAST).apply {
+                    putExtra(EXTRA_SECONDS, currentSeconds)
+                }
+                sendBroadcast(tickIntent)
+            }
+        }
+    }
+
+    private fun stopTimerAndService() {
+        isRunning = false
+        serviceJob.cancelChildren()
+        releaseWakeLock()
+
+        val stopBroadcast = Intent(ACTION_STOP_BROADCAST)
+        sendBroadcast(stopBroadcast)
+
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isRunning = false
+        serviceJob.cancel()
+        releaseWakeLock()
     }
 
     private fun showNotification(taskName: String, totalSeconds: Int) {
         val channelId = "timer_channel"
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                channelId,
-                "Focus Timer",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Active focus timer tracking"
-            }
-            notificationManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            channelId,
+            "Focus Timer",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Active focus timer tracking"
         }
+        notificationManager.createNotificationChannel(channel)
 
         val notificationIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -82,6 +154,7 @@ class TimerService : Service() {
         const val EXTRA_SECONDS = "extra_seconds"
         const val ACTION_STOP = "action_stop"
         const val ACTION_STOP_BROADCAST = "com.ftt.focustimetracker.ACTION_STOP_TIMER"
+        const val ACTION_TICK_BROADCAST = "com.ftt.focustimetracker.ACTION_TICK_TIMER"
 
         fun start(context: Context, taskName: String, seconds: Int) {
             val intent = Intent(context, TimerService::class.java).apply {
