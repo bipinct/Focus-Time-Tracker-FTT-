@@ -6,7 +6,7 @@
 
 ## 📱 Pre-built APK
 
-You can find the pre-built debug APK in the repository under the [apk/](file:///home/bct/AndroidStudioProjects/FocusTimeTracker/apk/app-debug.apk) folder:
+You can find the pre-built debug APK in the repository under the [apk/](https://github.com/bipinct/Focus-Time-Tracker-FTT-/blob/main/apk/app-debug.apk) folder:
 - **Path:** `apk/app-debug.apk`
 
 ---
