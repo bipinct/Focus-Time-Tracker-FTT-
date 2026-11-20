@@ -1,17 +1,18 @@
-package com.ftt.focustimetracker
+package com.ftt.focustimetracker.worker
 
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.ftt.focustimetracker.data.BackupManager
+import com.ftt.focustimetracker.data.StorageManager
 import java.io.File
 import java.time.LocalDate
 
 class BackupWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         return try {
-            val tasks = loadTasks(applicationContext)
-            val history = loadHistory(applicationContext)
-            val csvContent = createCsvContent(history, tasks)
+            val history = StorageManager.loadHistory(applicationContext)
+            val csvContent = BackupManager.createCsvContent(history)
 
             val backupDir = File(applicationContext.getExternalFilesDir(null), "backups")
             if (!backupDir.exists()) {

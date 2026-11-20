@@ -1,4 +1,4 @@
-package com.ftt.focustimetracker
+package com.ftt.focustimetracker.service
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -6,11 +6,11 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import com.ftt.focustimetracker.MainActivity
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -133,6 +133,13 @@ class TimerService : Service() {
         saveTimerState(false, 0L, "")
     }
 
+    private fun formatServiceTime(totalSeconds: Int): String {
+        val h = totalSeconds / 3600
+        val m = (totalSeconds % 3600) / 60
+        val s = totalSeconds % 60
+        return String.format("%02d:%02d:%02d", h, m, s)
+    }
+
     private fun showNotification(taskName: String, totalSeconds: Int) {
         val channelId = "timer_channel"
         val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -162,7 +169,7 @@ class TimerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val timeFormatted = formatTime(totalSeconds)
+        val timeFormatted = formatServiceTime(totalSeconds)
 
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Focusing: $taskName")
@@ -189,11 +196,7 @@ class TimerService : Service() {
                 putExtra(EXTRA_TASK_NAME, taskName)
                 putExtra(EXTRA_SECONDS, seconds)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startForegroundService(intent)
         }
 
         fun stop(context: Context) {
