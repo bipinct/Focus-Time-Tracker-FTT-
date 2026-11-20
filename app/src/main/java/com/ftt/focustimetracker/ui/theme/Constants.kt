@@ -5,6 +5,12 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.ui.graphics.Color
 
+// ==========================================
+// DEVELOPER DEBUG CONFIGURATION
+// Set to true to enable editing history records in UI for debugging/correcting values
+// ==========================================
+const val ENABLE_HISTORY_EDIT_MODE = true
+
 val presetColors = listOf(
     Color(0xFF4F46E5), // Indigo
     Color(0xFFEF4444), // Red

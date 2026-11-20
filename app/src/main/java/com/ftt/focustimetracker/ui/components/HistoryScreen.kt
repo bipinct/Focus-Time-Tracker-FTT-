@@ -1,5 +1,6 @@
 package com.ftt.focustimetracker.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,10 +17,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ftt.focustimetracker.model.HistoryRecord
+import com.ftt.focustimetracker.ui.theme.ENABLE_HISTORY_EDIT_MODE
 import com.ftt.focustimetracker.ui.theme.formatTime
 
 @Composable
-fun HistoryScreen(history: List<HistoryRecord>) {
+fun HistoryScreen(
+    history: List<HistoryRecord>,
+    onEditRecord: (HistoryRecord) -> Unit
+) {
     Column(Modifier.padding(16.dp).fillMaxSize()) {
         if (history.isEmpty()) {
             Spacer(Modifier.height(32.dp))
@@ -87,14 +92,21 @@ fun HistoryScreen(history: List<HistoryRecord>) {
                             }
 
                             Spacer(Modifier.height(8.dp))
-                            Divider(color = Color(0xFFE2E8F0))
+                            HorizontalDivider(color = Color(0xFFE2E8F0))
                             Spacer(Modifier.height(8.dp))
 
                             group.records.forEach { record ->
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
+                                        .then(
+                                            if (ENABLE_HISTORY_EDIT_MODE) {
+                                                Modifier.clickable { onEditRecord(record) }
+                                            } else {
+                                                Modifier
+                                            }
+                                        )
+                                        .padding(vertical = 6.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {

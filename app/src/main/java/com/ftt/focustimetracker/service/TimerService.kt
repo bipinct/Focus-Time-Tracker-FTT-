@@ -1,19 +1,18 @@
 package com.ftt.focustimetracker.service
 
+import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.ftt.focustimetracker.MainActivity
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
 
 class TimerService : Service() {
 
@@ -22,7 +21,6 @@ class TimerService : Service() {
     private var taskName = "Focus Task"
     private var isRunning = false
     private var startTimeMillis = 0L
-    private var scheduler: ScheduledExecutorService? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -42,7 +40,6 @@ class TimerService : Service() {
             startTimeMillis = SystemClock.elapsedRealtime() - (currentSeconds * 1000L)
             acquireWakeLock()
             saveTimerState(true, startTimeMillis, taskName)
-            startTicking()
         } else {
             if (requestedSeconds >= 0 && kotlin.math.abs(requestedSeconds - currentSeconds) > 2) {
                 currentSeconds = requestedSeconds
@@ -51,8 +48,56 @@ class TimerService : Service() {
             }
         }
 
+        val elapsedMillis = SystemClock.elapsedRealtime() - startTimeMillis
+        currentSeconds = (elapsedMillis / 1000L).toInt()
+
         showNotification(taskName, currentSeconds)
+
+        val tickIntent = Intent(ACTION_TICK_BROADCAST).apply {
+            putExtra(EXTRA_SECONDS, currentSeconds)
+        }
+        sendBroadcast(tickIntent)
+
+        // Schedule next tick alarm via AlarmManager (wakes CPU from Doze / screen off)
+        scheduleNextTickAlarm()
+
         return START_STICKY
+    }
+
+    private fun scheduleNextTickAlarm() {
+        if (!isRunning) return
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, TimerService::class.java).apply {
+            action = ACTION_TICK_ALARM
+            putExtra(EXTRA_TASK_NAME, taskName)
+            putExtra(EXTRA_SECONDS, currentSeconds)
+        }
+        val pendingIntent = PendingIntent.getService(
+            this, 100, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = SystemClock.elapsedRealtime() + 1000L
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerTime, pendingIntent)
+            } else {
+                alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerTime, pendingIntent)
+            }
+        } catch (e: Exception) {
+            alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerTime, pendingIntent)
+        }
+    }
+
+    private fun cancelTickAlarm() {
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, TimerService::class.java).apply {
+            action = ACTION_TICK_ALARM
+        }
+        val pendingIntent = PendingIntent.getService(
+            this, 100, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        alarmManager.cancel(pendingIntent)
     }
 
     private fun saveTimerState(running: Boolean, startRealtime: Long, name: String) {
@@ -89,31 +134,9 @@ class TimerService : Service() {
         wakeLock = null
     }
 
-    private fun startTicking() {
-        scheduler?.shutdownNow()
-        scheduler = Executors.newSingleThreadScheduledExecutor().apply {
-            scheduleWithFixedDelay({
-                if (!isRunning) {
-                    shutdown()
-                    return@scheduleWithFixedDelay
-                }
-                val elapsedMillis = SystemClock.elapsedRealtime() - startTimeMillis
-                currentSeconds = (elapsedMillis / 1000L).toInt()
-
-                showNotification(taskName, currentSeconds)
-
-                val tickIntent = Intent(ACTION_TICK_BROADCAST).apply {
-                    putExtra(EXTRA_SECONDS, currentSeconds)
-                }
-                sendBroadcast(tickIntent)
-            }, 0, 1, TimeUnit.SECONDS)
-        }
-    }
-
     private fun stopTimerAndService() {
         isRunning = false
-        scheduler?.shutdownNow()
-        scheduler = null
+        cancelTickAlarm()
         releaseWakeLock()
         saveTimerState(false, 0L, "")
 
@@ -127,8 +150,7 @@ class TimerService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        scheduler?.shutdownNow()
-        scheduler = null
+        cancelTickAlarm()
         releaseWakeLock()
         saveTimerState(false, 0L, "")
     }
@@ -188,6 +210,7 @@ class TimerService : Service() {
         const val EXTRA_TASK_NAME = "extra_task_name"
         const val EXTRA_SECONDS = "extra_seconds"
         const val ACTION_STOP = "action_stop"
+        const val ACTION_TICK_ALARM = "action_tick_alarm"
         const val ACTION_STOP_BROADCAST = "com.ftt.focustimetracker.ACTION_STOP_TIMER"
         const val ACTION_TICK_BROADCAST = "com.ftt.focustimetracker.ACTION_TICK_TIMER"
 

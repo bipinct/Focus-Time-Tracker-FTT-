@@ -66,20 +66,48 @@ fun TimeTrackerApp() {
         }
     }
 
-    var tasks by remember { mutableStateOf(StorageManager.loadTasks(context)) }
-    var history by remember { mutableStateOf(StorageManager.loadHistory(context)) }
     var currentDate by remember { mutableStateOf(StorageManager.getTodayString()) }
+    var history by remember { mutableStateOf(StorageManager.loadHistory(context)) }
+    var tasks by remember {
+        mutableStateOf(
+            StorageManager.loadTasks(context).let { list ->
+                val updated = StorageManager.updateTasksWithDate(list, history, currentDate)
+                val prefs = context.getSharedPreferences("ftt_timer_prefs", Context.MODE_PRIVATE)
+                val isTimerRunning = prefs.getBoolean("is_timer_running", false)
+                val runningName = prefs.getString("running_task_name", null)
+                if (isTimerRunning && runningName != null) {
+                    val startRealtime = prefs.getLong("start_elapsed_realtime", 0L)
+                    val elapsedSecs = if (startRealtime > 0L) ((android.os.SystemClock.elapsedRealtime() - startRealtime) / 1000L).toInt() else 0
+                    updated.map { task ->
+                        if (task.name == runningName) task.copy(isRunning = true, totalSeconds = elapsedSecs.coerceAtLeast(task.totalSeconds))
+                        else task.copy(isRunning = false)
+                    }
+                } else {
+                    updated
+                }
+            }
+        )
+    }
+
     var activeTab by remember { mutableStateOf(0) }
     var isRefreshing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
-    tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
+    // Helper to commit today's task seconds into history
+    fun commitTodayToHistory() {
+        val todayRecords = tasks.filter { it.totalSeconds > 0 }.map { task ->
+            HistoryRecord(date = currentDate, taskName = task.name, totalSeconds = task.totalSeconds)
+        }
+        val otherHistory = history.filter { it.date != currentDate }
+        history = otherHistory + todayRecords
+    }
 
     val backupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("text/csv")
     ) { uri ->
         uri?.let {
             try {
+                commitTodayToHistory()
                 val csvContent = BackupManager.createCsvContent(history)
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(csvContent.toByteArray())
@@ -109,10 +137,6 @@ fun TimeTrackerApp() {
         }
     }
 
-    LaunchedEffect(tasks) {
-        StorageManager.saveTasks(context, tasks)
-    }
-
     LaunchedEffect(history) {
         StorageManager.saveHistory(context, history)
     }
@@ -120,13 +144,47 @@ fun TimeTrackerApp() {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var taskToDelete by remember { mutableStateOf<Task?>(null) }
     var taskToEdit by remember { mutableStateOf<Task?>(null) }
+    var historyRecordToEdit by remember { mutableStateOf<HistoryRecord?>(null) }
 
     val runningTask = tasks.find { it.isRunning }
 
+    // Start/Stop Timer Service and local smooth ticking loop
     LaunchedEffect(runningTask?.id) {
         if (runningTask != null) {
             TimerService.start(context, runningTask.name, runningTask.totalSeconds)
+            while (true) {
+                delay(1000)
+                val today = StorageManager.getTodayString()
+                if (today != currentDate) {
+                    commitTodayToHistory()
+                    currentDate = today
+                    tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
+                }
+                tasks = tasks.map { task ->
+                    if (task.isRunning) {
+                        task.copy(totalSeconds = task.totalSeconds + 1)
+                    } else {
+                        task
+                    }
+                }
+                val running = tasks.find { it.isRunning }
+                if (running != null) {
+                    history = history.map { record ->
+                        if (record.date == currentDate && record.taskName == running.name) {
+                            record.copy(totalSeconds = running.totalSeconds)
+                        } else {
+                            record
+                        }
+                    }
+                    val exists = history.any { it.date == currentDate && it.taskName == running.name }
+                    if (!exists) {
+                        history = history + HistoryRecord(date = currentDate, taskName = running.name, totalSeconds = running.totalSeconds)
+                    }
+                }
+            }
         } else {
+            commitTodayToHistory()
+            StorageManager.saveTasks(context, tasks)
             TimerService.stop(context)
         }
     }
@@ -137,33 +195,20 @@ fun TimeTrackerApp() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 when (intent?.action) {
                     TimerService.ACTION_STOP_BROADCAST -> {
+                        commitTodayToHistory()
                         tasks = tasks.map { it.copy(isRunning = false) }
+                        StorageManager.saveTasks(context, tasks)
                     }
                     TimerService.ACTION_TICK_BROADCAST -> {
                         val newSeconds = intent.getIntExtra(TimerService.EXTRA_SECONDS, 0)
                         val today = StorageManager.getTodayString()
                         if (today != currentDate) {
+                            commitTodayToHistory()
                             currentDate = today
                             tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
                         }
                         tasks = tasks.map {
                             if (it.isRunning) it.copy(totalSeconds = newSeconds) else it
-                        }
-                        history = history.map { record ->
-                            val activeRunning = tasks.find { it.isRunning && it.name == record.taskName }
-                            if (record.date == currentDate && activeRunning != null) {
-                                record.copy(totalSeconds = newSeconds)
-                            } else {
-                                record
-                            }
-                        }
-                        tasks.forEach { task ->
-                            if (task.isRunning) {
-                                val exists = history.any { it.date == currentDate && it.taskName == task.name }
-                                if (!exists) {
-                                    history = history + HistoryRecord(date = currentDate, taskName = task.name, totalSeconds = newSeconds)
-                                }
-                            }
                         }
                     }
                 }
@@ -183,34 +228,21 @@ fun TimeTrackerApp() {
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
                 val today = StorageManager.getTodayString()
                 if (today != currentDate) {
+                    commitTodayToHistory()
                     currentDate = today
+                    tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
                 }
-                tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
 
                 val prefs = context.getSharedPreferences("ftt_timer_prefs", Context.MODE_PRIVATE)
                 if (prefs.getBoolean("is_timer_running", false)) {
                     val startRealtime = prefs.getLong("start_elapsed_realtime", 0L)
+                    val runningName = prefs.getString("running_task_name", null)
                     if (startRealtime > 0L) {
                         val elapsedSecs = ((android.os.SystemClock.elapsedRealtime() - startRealtime) / 1000L).toInt()
                         if (elapsedSecs >= 0) {
                             tasks = tasks.map {
-                                if (it.isRunning) it.copy(totalSeconds = elapsedSecs) else it
-                            }
-                            history = history.map { record ->
-                                val activeRunning = tasks.find { it.isRunning && it.name == record.taskName }
-                                if (record.date == currentDate && activeRunning != null) {
-                                    record.copy(totalSeconds = elapsedSecs)
-                                } else {
-                                    record
-                                }
-                            }
-                            tasks.forEach { task ->
-                                if (task.isRunning) {
-                                    val exists = history.any { it.date == currentDate && it.taskName == task.name }
-                                    if (!exists) {
-                                        history = history + HistoryRecord(date = currentDate, taskName = task.name, totalSeconds = elapsedSecs)
-                                    }
-                                }
+                                if (it.name == runningName) it.copy(isRunning = true, totalSeconds = elapsedSecs)
+                                else it.copy(isRunning = false)
                             }
                         }
                     }
@@ -220,46 +252,10 @@ fun TimeTrackerApp() {
         lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
 
         onDispose {
+            commitTodayToHistory()
+            StorageManager.saveTasks(context, tasks)
             context.unregisterReceiver(receiver)
             lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(1000)
-            val today = StorageManager.getTodayString()
-            if (today != currentDate) {
-                currentDate = today
-                tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
-            }
-
-            tasks = tasks.map { task ->
-                if (task.isRunning) {
-                    val newSecs = task.totalSeconds + 1
-                    task.copy(totalSeconds = newSecs)
-                } else {
-                    task
-                }
-            }
-
-            history = history.map { record ->
-                val activeRunning = tasks.find { it.isRunning && it.name == record.taskName }
-                if (record.date == currentDate && activeRunning != null) {
-                    record.copy(totalSeconds = activeRunning.totalSeconds)
-                } else {
-                    record
-                }
-            }
-
-            tasks.forEach { task ->
-                if (task.isRunning) {
-                    val exists = history.any { it.date == currentDate && it.taskName == task.name }
-                    if (!exists) {
-                        history = history + HistoryRecord(date = currentDate, taskName = task.name, totalSeconds = task.totalSeconds)
-                    }
-                }
-            }
         }
     }
 
@@ -269,6 +265,7 @@ fun TimeTrackerApp() {
             onConfirm = {
                 taskToDelete?.let { t ->
                     tasks = tasks.filter { it.id != t.id }
+                    StorageManager.saveTasks(context, tasks)
                 }
                 taskToDelete = null
             },
@@ -284,9 +281,33 @@ fun TimeTrackerApp() {
                 tasks = tasks.map {
                     if (it.id == targetId) it.copy(name = newName) else it
                 }
+                StorageManager.saveTasks(context, tasks)
                 taskToEdit = null
             },
             onDismiss = { taskToEdit = null }
+        )
+    }
+
+    if (historyRecordToEdit != null) {
+        EditHistoryDialog(
+            record = historyRecordToEdit!!,
+            onSave = { newSeconds ->
+                val targetId = historyRecordToEdit!!.id
+                history = history.map {
+                    if (it.id == targetId) it.copy(totalSeconds = newSeconds) else it
+                }
+                tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
+                StorageManager.saveTasks(context, tasks)
+                historyRecordToEdit = null
+            },
+            onDelete = {
+                val targetId = historyRecordToEdit!!.id
+                history = history.filter { it.id != targetId }
+                tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
+                StorageManager.saveTasks(context, tasks)
+                historyRecordToEdit = null
+            },
+            onDismiss = { historyRecordToEdit = null }
         )
     }
 
@@ -299,11 +320,13 @@ fun TimeTrackerApp() {
                 tasks = tasks,
                 onAddTask = { name, color, icon ->
                     tasks = tasks + Task(name = name, colorInt = color.toArgb(), iconName = icon)
+                    StorageManager.saveTasks(context, tasks)
                     coroutineScope.launch { drawerState.close() }
                 },
                 onEditTask = { task -> taskToEdit = task },
                 onDeleteTask = { task -> taskToDelete = task },
                 onBackupClick = {
+                    commitTodayToHistory()
                     val currentYear = LocalDate.now().year
                     val filename = "focus_time_tracker_${currentYear}.csv"
                     backupLauncher.launch(filename)
@@ -316,6 +339,7 @@ fun TimeTrackerApp() {
                     if (success) {
                         history = StorageManager.loadHistory(context)
                         tasks = StorageManager.updateTasksWithDate(StorageManager.loadTasks(context), history, currentDate)
+                        StorageManager.saveTasks(context, tasks)
                     }
                 },
                 autoBackupEnabled = autoBackupEnabled,
@@ -370,6 +394,7 @@ fun TimeTrackerApp() {
                 onRefresh = {
                     coroutineScope.launch {
                         isRefreshing = true
+                        commitTodayToHistory()
                         currentDate = StorageManager.getTodayString()
                         history = StorageManager.loadHistory(context)
                         tasks = StorageManager.updateTasksWithDate(tasks, history, currentDate)
@@ -389,14 +414,19 @@ fun TimeTrackerApp() {
                         TrackerScreen(
                             tasks = tasks,
                             onToggleTask = { taskId ->
+                                commitTodayToHistory()
                                 tasks = tasks.map {
                                     if (it.id == taskId) it.copy(isRunning = !it.isRunning)
                                     else it.copy(isRunning = false)
                                 }
+                                StorageManager.saveTasks(context, tasks)
                             }
                         )
                     } else {
-                        HistoryScreen(history = history)
+                        HistoryScreen(
+                            history = history,
+                            onEditRecord = { record -> historyRecordToEdit = record }
+                        )
                     }
                 }
             }

@@ -17,6 +17,7 @@ object StorageManager {
             val obj = JSONObject().apply {
                 put("id", task.id)
                 put("name", task.name)
+                put("isRunning", task.isRunning)
                 put("colorInt", task.colorInt)
                 put("iconName", task.iconName)
             }
@@ -38,7 +39,7 @@ object StorageManager {
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         name = obj.optString("name", "Task"),
                         totalSeconds = 0,
-                        isRunning = false,
+                        isRunning = obj.optBoolean("isRunning", false),
                         colorInt = obj.optInt("colorInt", 0xFF4F46E5.toInt()),
                         iconName = obj.optString("iconName", "Star")
                     )
